@@ -58,16 +58,37 @@ class Config:
         },
         "catboost": {
             "learning_rate": (0.01, 0.1),
-            "depth": (4, 10),
+            "depth": (3, 10),
             "l2_leaf_reg": (1, 10),
             "subsample": (0.6, 1.0),
+            "colsample_bylevel": (0.6, 1.0),
+        },
+        "xgboost": {
+            "learning_rate": (0.01, 0.1),
+            "max_depth": (3, 10),
+            "min_child_weight": (1, 10),
+            "subsample": (0.6, 1.0),
+            "colsample_bytree": (0.6, 1.0),
+            "reg_alpha": (0, 1),
+            "reg_lambda": (0, 1),
         }
     }
     
     # Ensemble Settings
     ENSEMBLE_WEIGHTS = {
-        "lightgbm": 0.5,
-        "catboost": 0.5
+        "lightgbm": 0.33,
+        "catboost": 0.33,
+        "xgboost": 0.34
+    }
+    
+    # Optuna Settings
+    OPTUNA_SETTINGS = {
+        "n_trials": 100,
+        "cv_folds": 3,  # Use 3 folds for faster optimization
+        "timeout": None,  # No timeout by default
+        "direction": "maximize",
+        "n_jobs": 1,  # Parallel trials (use 1 to avoid conflicts)
+        "storage": None,  # Use in-memory storage by default
     }
     
     # Cross-Validation Settings

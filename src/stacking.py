@@ -17,21 +17,28 @@ def run_stacking():
     
     # Check if OOF files exist
     oof_dir = "data/processed/oof/"
-    if not os.path.exists(f"{oof_dir}/lgb_oof.npy"):
-        raise FileNotFoundError("LightGBM OOF predictions not found. Run train.py first.")
-    if not os.path.exists(f"{oof_dir}/cb_oof.npy"):
-        raise FileNotFoundError("CatBoost OOF predictions not found. Run train_cb.py first.")
+    required_files = ["lgb_oof.npy", "cb_oof.npy", "xgb_oof.npy"]
+    missing_files = []
+    
+    for file in required_files:
+        if not os.path.exists(f"{oof_dir}/{file}"):
+            missing_files.append(file)
+    
+    if missing_files:
+        raise FileNotFoundError(f"Missing OOF predictions: {missing_files}. Run train.py for all models first.")
 
     # Load OOF predictions
     lgb_oof = np.load(f"{oof_dir}/lgb_oof.npy")
     cb_oof = np.load(f"{oof_dir}/cb_oof.npy")
+    xgb_oof = np.load(f"{oof_dir}/xgb_oof.npy")
 
     lgb_test = np.load(f"{oof_dir}/lgb_test.npy")
     cb_test = np.load(f"{oof_dir}/cb_test.npy")
+    xgb_test = np.load(f"{oof_dir}/xgb_test.npy")
 
     # Stack features (each model prediction becomes a feature)
-    X_stack = np.column_stack([lgb_oof, cb_oof])
-    X_test_stack = np.column_stack([lgb_test, cb_test])
+    X_stack = np.column_stack([lgb_oof, cb_oof, xgb_oof])
+    X_test_stack = np.column_stack([lgb_test, cb_test, xgb_test])
 
     print(f"Stacking features shape: {X_stack.shape}")
 
@@ -75,20 +82,22 @@ def run_weighted_ensemble(weights=None):
     """Simple weighted ensemble without meta-learning"""
     
     if weights is None:
-        weights = [0.5, 0.5]  # Equal weights by default
+        weights = [0.33, 0.33, 0.34]  # Equal weights by default for 3 models
 
     oof_dir = "data/processed/oof/"
     
     # Load OOF predictions
     lgb_oof = np.load(f"{oof_dir}/lgb_oof.npy")
     cb_oof = np.load(f"{oof_dir}/cb_oof.npy")
+    xgb_oof = np.load(f"{oof_dir}/xgb_oof.npy")
 
     lgb_test = np.load(f"{oof_dir}/lgb_test.npy")
     cb_test = np.load(f"{oof_dir}/cb_test.npy")
+    xgb_test = np.load(f"{oof_dir}/xgb_test.npy")
 
     # Weighted ensemble
-    ensemble_oof = weights[0] * lgb_oof + weights[1] * cb_oof
-    ensemble_test = weights[0] * lgb_test + weights[1] * cb_test
+    ensemble_oof = weights[0] * lgb_oof + weights[1] * cb_oof + weights[2] * xgb_oof
+    ensemble_test = weights[0] * lgb_test + weights[1] * cb_test + weights[2] * xgb_test
 
     # Calculate ensemble score
     train = pd.read_csv("data/raw/train.csv")

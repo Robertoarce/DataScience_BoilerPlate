@@ -26,6 +26,8 @@ def train_single_model(model_name):
         score = run_training("lightgbm")
     elif model_name == "catboost":
         score = run_training("catboost")
+    elif model_name == "xgboost":
+        score = run_training("xgboost")
     else:
         raise ValueError(f"Unknown model: {model_name}")
     
@@ -45,8 +47,9 @@ def train_all_base_models():
     # Train models
     lgb_score = train_single_model("lightgbm")
     cb_score = train_single_model("catboost")
+    xgb_score = train_single_model("xgboost")
     
-    return lgb_score, cb_score
+    return lgb_score, cb_score, xgb_score
 
 
 def create_ensembles():
@@ -58,11 +61,15 @@ def create_ensembles():
     oof_dir = Path("data/processed/oof/")
     
     # Check if OOF files exist
-    if not (oof_dir / "lgb_oof.npy").exists():
-        print("❌ LightGBM OOF not found. Run base models first.")
-        return None, None
-    if not (oof_dir / "cb_oof.npy").exists():
-        print("❌ CatBoost OOF not found. Run base models first.")
+    required_files = ["lgb_oof.npy", "cb_oof.npy", "xgb_oof.npy"]
+    missing_files = []
+    
+    for file in required_files:
+        if not (oof_dir / file).exists():
+            missing_files.append(file)
+    
+    if missing_files:
+        print(f"❌ Missing OOF files: {missing_files}. Run base models first.")
         return None, None
     
     # Stacking
@@ -92,9 +99,9 @@ def optimize_hyperparameters(model="lightgbm", n_trials=50):
     X, y, X_test = build_features(train_df, test_df)
     
     # Optimize
-    if model == "lightgbm":
-        best_params = run_hyperparameter_tuning(X, y, n_trials=n_trials)
-        print("\n📋 Best LightGBM parameters:")
+    best_params = run_hyperparameter_tuning(X, y, model_type=model, n_trials=n_trials)
+    if best_params:
+        print(f"\n📋 Best {model.upper()} parameters:")
         for key, value in best_params.items():
             print(f"  {key}: {value}")
         return best_params
@@ -170,7 +177,7 @@ def run_full_pipeline(optimize_first=False, n_trials=50, use_wandb=True):
     print("\nStep 2: Training Base Models")
     if not use_wandb:
         print("⚠️  Note: Individual training functions still use W&B internally")
-    lgb_score, cb_score = train_all_base_models()
+    lgb_score, cb_score, xgb_score = train_all_base_models()
     
     # Step 3: Create ensembles
     print("\nStep 3: Creating Ensembles")
