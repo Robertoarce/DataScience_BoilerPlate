@@ -1,45 +1,22 @@
 import os
 
-import numpy as np 
+import numpy as np
+import optuna
 import pandas as pd
+import wandb
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_selector, make_column_transformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, auc, classification_report, confusion_matrix, f1_score, roc_auc_score, roc_curve
 from sklearn.model_selection import GridSearchCV, KFold, RandomizedSearchCV, StratifiedKFold, cross_val_score, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler, OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-
-try:
-	from .wandb_utils import (
-		build_feature_importance_frame,
-		extract_prediction_scores,
-		finish_wandb_run,
-		initialize_wandb_run,
-		log_baseline_results,
-		log_benchmark_model_results,
-		log_benchmark_summary_results,
-		log_feature_importance_results,
-		log_tuning_results,
-	)
-except ImportError:
-	from wandb_utils import (
-		build_feature_importance_frame,
-		extract_prediction_scores,
-		finish_wandb_run,
-		initialize_wandb_run,
-		log_baseline_results,
-		log_benchmark_model_results,
-		log_benchmark_summary_results,
-		log_feature_importance_results,
-		log_tuning_results,
-	)
 
 
 # File Paths
@@ -160,7 +137,7 @@ df = pd.read_csv(r"C:\00 ALL\05 Kaggle\02 Titanic\train.csv")
 
 
 class FeatureCreator(BaseEstimator, TransformerMixin):
-	def fit(self, X, _y=None):
+	def fit(self, X, y=None):
 		# Every calculation that is column wise (to avoid data leakage)
 		X = X.copy()
 
@@ -215,21 +192,7 @@ full_pipeline = Pipeline([
 	("features", FeatureCreator()),
 	("preprocessing", preprocessing_pipeline),
 	("model", RandomForestClassifier(random_state=42)),
-], memory=None)
-
-benchmark_models = {
-	"random_forest": RandomForestClassifier(
-		random_state=RANDOM_STATE,
-		n_estimators=100,
-		min_samples_leaf=1,
-		max_features="sqrt",
-	),
-	"logistic_regression": LogisticRegression(max_iter=2000, random_state=RANDOM_STATE),
-	"knn": KNeighborsClassifier(n_neighbors=5),
-	"svc": SVC(C=1.0, kernel="rbf", gamma="scale"),
-	"decision_tree": DecisionTreeClassifier(random_state=RANDOM_STATE, ccp_alpha=0.0),
- 
-}
+])
 
 
 # =========================
@@ -250,20 +213,9 @@ cv_splitter = StratifiedKFold(
 	n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE
 )
 
-wandb_run = initialize_wandb_run(
-	settings=WANDB_SETTINGS,
-	target=TARGET,
-	random_state=RANDOM_STATE,
-	n_splits=N_SPLITS,
-	paths=PATHS,
-	benchmark_models=benchmark_models,
-	baseline_model=full_pipeline.named_steps["model"],
-)
-
 # Baseline model
 full_pipeline.fit(X_train, y_train)
 baseline_pred = full_pipeline.predict(X_test)
-baseline_scores_pred = extract_prediction_scores(full_pipeline, X_test)
 
 print("Baseline holdout report")
 print(classification_report(y_test, baseline_pred))
@@ -278,9 +230,6 @@ baseline_scores = cross_val_score(
 )
 print(f"Baseline CV F1: {baseline_scores.mean():.3f} ± {baseline_scores.std():.3f}")
 
-if wandb_run is not None:
-    log_baseline_results(wandb_run, y_test, baseline_pred, baseline_scores, baseline_scores_pred)
-
 
 # RandomizedSearchCV
 param_grid = {
@@ -288,8 +237,6 @@ param_grid = {
 	"model__max_depth": [None, 10, 20],
 	"model__min_samples_split": [2, 5, 10],
 }
-
-
 
 search = RandomizedSearchCV(
 	full_pipeline,
@@ -306,9 +253,7 @@ search = RandomizedSearchCV(
 search.fit(X_train, y_train)
 
 tuned_pred = search.predict(X_test)
-tuned_scores_pred = extract_prediction_scores(search.best_estimator_, X_test)
 
-print("\n\n--------- RandomizedSearchCV Results ---------")
 print("Best parameters:", search.best_params_)
 print(f"Best CV F1: {search.best_score_:.3f}")
 print(f"Search score on test (F1): {search.score(X_test, y_test):.3f}")
@@ -317,8 +262,6 @@ print(f"Best estimator test F1: {f1_score(y_test, tuned_pred):.3f}")
 print(classification_report(y_test, tuned_pred))
 print(confusion_matrix(y_test, tuned_pred))
 
-if wandb_run is not None:
-	log_tuning_results(wandb_run, search, param_grid, X_test, y_test, tuned_pred, tuned_scores_pred)
 
 # =========================
 # FEATURE IMPORTANCE
@@ -342,29 +285,47 @@ fi = (
 	.reset_index(drop=True)
 )
 
-print(f"\n\n--------- Feature Importance Results ---------")
 print(fi.head(20))
-
-if wandb_run is not None:
-	log_feature_importance_results(
-		wandb_run,
-		"tuning/feature_importance",
-		fi,
-		"Tuned Model Feature Importance (Top 20)",
-	)
 
 
 # =========================
 # MODEL BENCHMARKING
 # =========================
+benchmark_models = {
+	"random_forest": RandomForestClassifier(random_state=RANDOM_STATE),
+	"logistic_regression": LogisticRegression(max_iter=2000, random_state=RANDOM_STATE),
+	"knn": KNeighborsClassifier(),
+	"svc": SVC(),
+	"decision_tree": DecisionTreeClassifier(random_state=RANDOM_STATE),
+}
+
 benchmark_results = []
+wandb_run = None
+
+if WANDB_SETTINGS.get("api_key"):
+	try:
+		os.environ["WANDB_API_KEY"] = WANDB_SETTINGS["api_key"]
+		wandb.login(key=WANDB_SETTINGS["api_key"], relogin=True)
+		wandb_run = wandb.init(
+			project=WANDB_SETTINGS["project"],
+			entity=WANDB_SETTINGS["entity"],
+			config={
+				"benchmark_models": list(benchmark_models.keys()),
+				"cv_folds": N_SPLITS,
+				"scoring": "f1",
+			},
+			job_type="benchmark",
+			reinit=True,
+		)
+	except Exception as exc:
+		print(f"W&B logging skipped: {exc}")
 
 for model_name, model in benchmark_models.items():
 	pipeline = Pipeline([
 		("features", FeatureCreator()),
 		("preprocessing", preprocessing_pipeline),
 		("model", model),
-	], memory=None)
+	])
 
 	cv_scores = cross_val_score(
 		pipeline,
@@ -377,16 +338,6 @@ for model_name, model in benchmark_models.items():
 
 	pipeline.fit(X_train, y_train)
 	holdout_pred = pipeline.predict(X_test)
-	holdout_scores = extract_prediction_scores(pipeline, X_test)
-	feature_frame = pipeline.named_steps["features"].transform(X_train)
-	benchmark_feature_names = pipeline.named_steps["preprocessing"].get_feature_names_out(
-		feature_frame.columns
-	)
-	benchmark_feature_importance = build_feature_importance_frame(
-		model_name,
-		pipeline.named_steps["model"],
-		benchmark_feature_names,
-	)
 
 	result = {
 		"model": model_name,
@@ -395,30 +346,17 @@ for model_name, model in benchmark_models.items():
 		"holdout_f1": f1_score(y_test, holdout_pred),
 		"holdout_accuracy": accuracy_score(y_test, holdout_pred),
 	}
-	if holdout_scores is not None:
-		result["holdout_roc_auc"] = roc_auc_score(y_test, holdout_scores)
 	benchmark_results.append(result)
 
 	if wandb_run is not None:
-		log_benchmark_model_results(
-			wandb_run,
-			model_name,
-			model,
-			result,
-			cv_scores,
-			y_test,
-			holdout_pred,
-			holdout_scores,
-			benchmark_feature_importance,
-		)
+		wandb.log({f"benchmark/{model_name}/{key}": value for key, value in result.items() if key != "model"})
 
 benchmark_df = pd.DataFrame(benchmark_results).sort_values(
 	by=["holdout_f1", "cv_f1_mean"], ascending=False
 ).reset_index(drop=True)
 
-print(f"\n\n--------- Benchmark Results ---------")
 print(benchmark_df)
 
 if wandb_run is not None:
-	log_benchmark_summary_results(wandb_run, benchmark_df)
-	finish_wandb_run(wandb_run)
+	wandb.log({"benchmark_table": wandb.Table(dataframe=benchmark_df)})
+	wandb.finish()
